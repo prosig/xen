@@ -1544,7 +1544,7 @@ static void p2m_teardown_altp2m(struct domain *d)
         d->arch.altp2m_p2m[i] = NULL;
         p2m_free_one(p2m);
         /* TODO: Think about moving altp2m_vttbr into p2m_domain. */
-        d->arch.altp2m_vttbr[i] = 0;
+        d->arch.altp2m_vttbr[i] = INVALID_MFN;
     }
 }
 
@@ -1556,7 +1556,7 @@ static int p2m_init_altp2m(struct domain *d)
     spin_lock_init(&d->arch.altp2m_lock);
     for ( i = 0; i < MAX_ALTP2M; i++ )
     {
-        d->arch.altp2m_vttbr[i] = 0;
+        d->arch.altp2m_vttbr[i] = INVALID_MFN;
         d->arch.altp2m_p2m[i] = p2m = p2m_init_one(d);
         if ( p2m == NULL )
         {
@@ -2053,8 +2053,6 @@ int p2m_get_mem_access(struct domain *d, gfn_t gfn,
     return ret;
 }
 
-
-
 struct p2m_domain *p2m_get_altp2m(struct vcpu *v)
 {
     unsigned int index = vcpu_altp2m(v).p2midx;
@@ -2098,7 +2096,7 @@ int p2m_init_altp2m_by_id(struct domain *d, unsigned int idx)
 
     altp2m_lock(d);
 
-    if ( !d->arch.altp2m_vttbr[idx] )
+    if ( d->arch.altp2m_vttbr[idx] != INVALID_MFN )
     {
         p2m_init_altp2m_helper(d, idx);
         rc = 0;
@@ -2106,6 +2104,29 @@ int p2m_init_altp2m_by_id(struct domain *d, unsigned int idx)
 
     altp2m_unlock(d);
 
+    return rc;
+}
+
+int p2m_init_next_altp2m(struct domain *d, uint16_t *idx)
+{
+    int rc = -EINVAL;
+    unsigned int i;
+
+    altp2m_lock(d);
+
+    for ( i = 0; i < MAX_ALTP2M; i++ )
+    {
+        if ( d->arch.altp2m_vttbr[i] != INVALID_MFN )
+            continue;
+
+        p2m_init_altp2m_helper(d, i);
+        *idx = i;
+        rc = 0;
+
+        break;
+    }
+
+    altp2m_unlock(d);
     return rc;
 }
 
