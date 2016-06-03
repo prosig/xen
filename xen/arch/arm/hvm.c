@@ -152,13 +152,20 @@ do_altp2m_op(
 
     /* TODO: implement following cases. */
     case HVMOP_altp2m_vcpu_enable_notify:
+        break;
+
     case HVMOP_altp2m_create_p2m:
         if ( !(rc = p2m_init_next_altp2m(d, &a.u.view.view)) )
             rc = __copy_to_guest(arg, &a, 1) ? -EFAULT : 0;
         break;
 
     case HVMOP_altp2m_destroy_p2m:
+        break;
+
     case HVMOP_altp2m_switch_p2m:
+        rc = p2m_switch_domain_altp2m_by_id(d, a.u.view.view);
+        break;
+
     case HVMOP_altp2m_set_mem_access:
         if ( a.u.set_mem_access.pad )
             rc = -EINVAL;
@@ -249,7 +256,33 @@ void
 altp2m_vcpu_update_p2m(
     struct vcpu *v)
 {
-    /* TODO: To be implemented for ARM. */
+    struct domain *d = v->domain;
+    struct p2m_domain *p2m = NULL;
+    struct vttbr_data *vttbr;
+
+    if ( altp2m_active(d) )
+        p2m = p2m_get_altp2m(v);
+    if ( !p2m )
+    {
+/* TEST */
+        printk(XENLOG_INFO "[DBG] altp2m_vcpu_update_p2m: ap2m = NULL\n");
+/* TEST END */
+        p2m = p2m_get_hostp2m(d);
+    }
+
+    vttbr = &p2m->vttbr;
+
+/* TEST */
+    printk(XENLOG_INFO "[DBG] altp2m_vcpu_update_p2m: old vttbr=%llx\n", READ_SYSREG64(VTTBR_EL2));
+    printk(XENLOG_INFO "[DBG] altp2m_vcpu_update_p2m: new vttbr=%llx\n", vttbr->vttbr);
+/* TEST END */
+
+    WRITE_SYSREG64(vttbr->vttbr, VTTBR_EL2);
+    //isb(); /* Ensure update is visible */
+
+/* TEST */
+    printk(XENLOG_INFO "[DBG] altp2m_vcpu_update_p2m: vttbr=%llx written\n", vttbr->vttbr);
+/* TEST END */
 }
 
 /*

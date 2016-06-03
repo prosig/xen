@@ -2173,6 +2173,40 @@ int p2m_init_next_altp2m(struct domain *d, uint16_t *idx)
     return rc;
 }
 
+int p2m_switch_domain_altp2m_by_id(struct domain *d, unsigned int idx)
+{
+    struct vcpu *v;
+    int rc = -EINVAL;
+
+    if ( idx >= MAX_ALTP2M )
+        return rc;
+
+    domain_pause_except_self(d);
+
+    altp2m_lock(d);
+
+    if ( d->arch.altp2m_vttbr[idx] != INVALID_MFN )
+    {
+        for_each_vcpu( d, v )
+            if ( idx != vcpu_altp2m(v).p2midx )
+            {
+                atomic_dec(&p2m_get_altp2m(v)->active_vcpus);
+                vcpu_altp2m(v).p2midx = idx;
+                atomic_inc(&p2m_get_altp2m(v)->active_vcpus);
+                altp2m_vcpu_update_p2m(v);
+            }
+
+        rc = 0;
+    }
+
+    altp2m_unlock(d);
+
+    domain_unpause_except_self(d);
+
+    return rc;
+}
+
+
 /*
  * Local variables:
  * mode: C
