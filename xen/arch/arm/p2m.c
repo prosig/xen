@@ -15,6 +15,8 @@
 #include <asm/hardirq.h>
 #include <asm/page.h>
 
+#include <asm/altp2m.h>
+
 #ifdef CONFIG_ARM_64
 static unsigned int __read_mostly p2m_root_order;
 static unsigned int __read_mostly p2m_root_level;
@@ -79,12 +81,28 @@ void dump_p2m_lookup(struct domain *d, paddr_t addr)
                  P2M_ROOT_LEVEL, P2M_ROOT_PAGES);
 }
 
+static void p2m_load_altp2m_VTTBR(struct vcpu *v)
+{
+    uint16_t altp2m_idx = vcpu_altp2m(v).p2midx;
+    struct domain *d = v->domain;
+
+    printk(XENLOG_INFO "[DBG] p2m_load_altp2m_VTTBR: vttbr=0x%llx\n",
+            d->arch.altp2m_vttbr[altp2m_idx]);
+
+    BUG_ON(!d->arch.altp2m_vttbr[altp2m_idx]);
+    WRITE_SYSREG64(d->arch.altp2m_vttbr[altp2m_idx], VTTBR_EL2);
+
+    isb(); /* Ensure update is visible */
+}
+
 static void p2m_load_VTTBR(struct domain *d)
 {
     if ( is_idle_domain(d) )
         return;
+
     BUG_ON(!d->arch.vttbr);
     WRITE_SYSREG64(d->arch.vttbr, VTTBR_EL2);
+
     isb(); /* Ensure update is visible */
 }
 
@@ -101,7 +119,11 @@ void p2m_restore_state(struct vcpu *n)
     WRITE_SYSREG(hcr & ~HCR_VM, HCR_EL2);
     isb();
 
-    p2m_load_VTTBR(n->domain);
+    if ( altp2m_active(n->domain) )
+        p2m_load_altp2m_VTTBR(n);
+    else
+        p2m_load_VTTBR(n->domain);
+
     isb();
 
     if ( is_32bit_domain(n->domain) )
@@ -119,6 +141,7 @@ void p2m_restore_state(struct vcpu *n)
 void flush_tlb_domain(struct domain *d)
 {
     unsigned long flags = 0;
+    struct vcpu *v = NULL;
 
     /* Update the VTTBR if necessary with the domain d. In this case,
      * it's only necessary to flush TLBs on every CPUs with the current VMID
@@ -127,14 +150,25 @@ void flush_tlb_domain(struct domain *d)
     if ( d != current->domain )
     {
         local_irq_save(flags);
-        p2m_load_VTTBR(d);
+
+        /* If altp2m is active, we need to update the VTTBR of every VCPU */
+        if ( altp2m_active(d) )
+            for_each_vcpu( d, v )
+                p2m_load_altp2m_VTTBR(v);
+        else
+            p2m_load_VTTBR(d);
     }
 
     flush_tlb();
 
     if ( d != current->domain )
     {
-        p2m_load_VTTBR(current->domain);
+        /* If altp2m is active, we need to update the VTTBR of every VCPU */
+        if ( altp2m_active(d) )
+            for_each_vcpu( d, v )
+                p2m_load_altp2m_VTTBR(v);
+        else
+            p2m_load_VTTBR(current->domain);
         local_irq_restore(flags);
     }
 }
@@ -1216,7 +1250,8 @@ int p2m_populate_ram(struct domain *d,
                      paddr_t start,
                      paddr_t end)
 {
-    return apply_p2m_changes(d, &d->arch.p2m, ALLOCATE, start, end,
+    return apply_p2m_changes(d, p2m_get_hostp2m(d),
+                             ALLOCATE, start, end,
                              0, MATTR_MEM, 0, p2m_ram_rw,
                              d->arch.p2m.default_access);
 }
@@ -1226,7 +1261,7 @@ int map_regions_rw_cache(struct domain *d,
                          unsigned long nr,
                          unsigned long mfn)
 {
-    return apply_p2m_changes(d, &d->arch.p2m, INSERT,
+    return apply_p2m_changes(d, p2m_get_hostp2m(d), INSERT,
                              pfn_to_paddr(start_gfn),
                              pfn_to_paddr(start_gfn + nr),
                              pfn_to_paddr(mfn),
@@ -1239,7 +1274,7 @@ int unmap_regions_rw_cache(struct domain *d,
                            unsigned long nr,
                            unsigned long mfn)
 {
-    return apply_p2m_changes(d, &d->arch.p2m, REMOVE,
+    return apply_p2m_changes(d, p2m_get_hostp2m(d), REMOVE,
                              pfn_to_paddr(start_gfn),
                              pfn_to_paddr(start_gfn + nr),
                              pfn_to_paddr(mfn),
@@ -1252,7 +1287,7 @@ int map_mmio_regions(struct domain *d,
                      unsigned long nr,
                      unsigned long mfn)
 {
-    return apply_p2m_changes(d, &d->arch.p2m, INSERT,
+    return apply_p2m_changes(d, p2m_get_hostp2m(d), INSERT,
                              pfn_to_paddr(start_gfn),
                              pfn_to_paddr(start_gfn + nr),
                              pfn_to_paddr(mfn),
@@ -1265,7 +1300,7 @@ int unmap_mmio_regions(struct domain *d,
                        unsigned long nr,
                        unsigned long mfn)
 {
-    return apply_p2m_changes(d, &d->arch.p2m, REMOVE,
+    return apply_p2m_changes(d, p2m_get_hostp2m(d), REMOVE,
                              pfn_to_paddr(start_gfn),
                              pfn_to_paddr(start_gfn + nr),
                              pfn_to_paddr(mfn),
@@ -1300,7 +1335,7 @@ int guest_physmap_add_entry(struct domain *d,
                             unsigned long page_order,
                             p2m_type_t t)
 {
-    return apply_p2m_changes(d, &d->arch.p2m, INSERT,
+    return apply_p2m_changes(d, p2m_get_hostp2m(d), INSERT,
                              pfn_to_paddr(gpfn),
                              pfn_to_paddr(gpfn + (1 << page_order)),
                              pfn_to_paddr(mfn), MATTR_MEM, 0, t,
@@ -1311,7 +1346,7 @@ void guest_physmap_remove_page(struct domain *d,
                                unsigned long gpfn,
                                unsigned long mfn, unsigned int page_order)
 {
-    apply_p2m_changes(d, &d->arch.p2m, REMOVE,
+    apply_p2m_changes(d, p2m_get_hostp2m(d), REMOVE,
                       pfn_to_paddr(gpfn),
                       pfn_to_paddr(gpfn + (1<<page_order)),
                       pfn_to_paddr(mfn), MATTR_MEM, 0, p2m_invalid,
@@ -1638,7 +1673,7 @@ int relinquish_p2m_mapping(struct domain *d)
 {
     struct p2m_domain *p2m = &d->arch.p2m;
 
-    return apply_p2m_changes(d, &d->arch.p2m, RELINQUISH,
+    return apply_p2m_changes(d, p2m_get_hostp2m(d), RELINQUISH,
                               pfn_to_paddr(p2m->lowest_mapped_gfn),
                               pfn_to_paddr(p2m->max_mapped_gfn),
                               pfn_to_paddr(INVALID_MFN),
@@ -1653,7 +1688,7 @@ int p2m_cache_flush(struct domain *d, xen_pfn_t start_mfn, xen_pfn_t end_mfn)
     start_mfn = MAX(start_mfn, p2m->lowest_mapped_gfn);
     end_mfn = MIN(end_mfn, p2m->max_mapped_gfn);
 
-    return apply_p2m_changes(d, &d->arch.p2m, CACHEFLUSH,
+    return apply_p2m_changes(d, p2m_get_hostp2m(d), CACHEFLUSH,
                              pfn_to_paddr(start_mfn),
                              pfn_to_paddr(end_mfn),
                              pfn_to_paddr(INVALID_MFN),
@@ -1779,12 +1814,12 @@ struct page_info *get_page_from_gva(struct domain *d, vaddr_t va,
         unsigned long irq_flags;
 
         local_irq_save(irq_flags);
-        p2m_load_VTTBR(d);
+        p2m_load_VTTBR(d); /* TODO: Incorporate p2m_load_altp2m_VTTBR(v) */
 
         rc = gvirt_to_maddr(va, &maddr, flags);
 
-        p2m_load_VTTBR(current->domain);
-        local_irq_restore(irq_flags);
+        p2m_load_VTTBR(current->domain); /* TODO: Incorporate p2m_load_altp2m_VTTBR(v) */
+        local_irq_restore(irq_flags); 
     }
     else
     {
