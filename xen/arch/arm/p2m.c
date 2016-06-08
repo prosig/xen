@@ -86,8 +86,8 @@ static void p2m_load_altp2m_VTTBR(struct vcpu *v)
     uint16_t altp2m_idx = vcpu_altp2m(v).p2midx;
     struct domain *d = v->domain;
 
-    printk(XENLOG_INFO "[DBG] p2m_load_altp2m_VTTBR: vttbr=0x%llx\n",
-            d->arch.altp2m_vttbr[altp2m_idx]);
+    printk(XENLOG_INFO "[DBG] p2m_load_altp2m_VTTBR[%d]: vttbr=0x%llx\n",
+            altp2m_idx, d->arch.altp2m_vttbr[altp2m_idx]);
 
     BUG_ON(!d->arch.altp2m_vttbr[altp2m_idx]);
     WRITE_SYSREG64(d->arch.altp2m_vttbr[altp2m_idx], VTTBR_EL2);
@@ -143,6 +143,8 @@ void flush_tlb_domain(struct domain *d)
     unsigned long flags = 0;
     struct vcpu *v = NULL;
 
+    /* TODO: Note that the domain is not locked here... */
+
     /* Update the VTTBR if necessary with the domain d. In this case,
      * it's only necessary to flush TLBs on every CPUs with the current VMID
      * (our domain).
@@ -151,22 +153,29 @@ void flush_tlb_domain(struct domain *d)
     {
         local_irq_save(flags);
 
-        /* If altp2m is active, we need to update the VTTBR of every VCPU */
+        /* If altp2m is active, update VTTBR and flush TLBs of every VCPU */
         if ( altp2m_active(d) )
-            for_each_vcpu( d, v )
+        {
+            for_each_vcpu( d, v ) 
+            {
                 p2m_load_altp2m_VTTBR(v);
+                flush_tlb();
+            }
+        }
         else
+        {
             p2m_load_VTTBR(d);
+            flush_tlb();
+        }
     }
-
-    flush_tlb();
+    else
+        flush_tlb();
 
     if ( d != current->domain )
     {
-        /* If altp2m is active, we need to update the VTTBR of every VCPU */
-        if ( altp2m_active(d) )
-            for_each_vcpu( d, v )
-                p2m_load_altp2m_VTTBR(v);
+        /* Make sure altp2m mapping is valid. */
+        if ( altp2m_active(current->domain) ) 
+            p2m_load_altp2m_VTTBR(current);
         else
             p2m_load_VTTBR(current->domain);
         local_irq_restore(flags);
@@ -1607,6 +1616,10 @@ static void p2m_teardown_altp2m(struct domain *d)
     unsigned int i;
     struct p2m_domain *p2m;
 
+/* TEST */
+    printk(XENLOG_INFO "[DBG] p2m_teardown_altp2m\n");
+/* TEST END */
+
     for ( i = 0; i < MAX_ALTP2M; i++ )
     {
         if ( !d->arch.altp2m_p2m[i] )
@@ -1618,6 +1631,8 @@ static void p2m_teardown_altp2m(struct domain *d)
         /* TODO: Think about moving altp2m_vttbr into p2m_domain. */
         d->arch.altp2m_vttbr[i] = INVALID_MFN;
     }
+    
+    d->arch.altp2m_active = false;
 }
 
 static int p2m_init_altp2m(struct domain *d)
@@ -1645,6 +1660,9 @@ static int p2m_init_altp2m(struct domain *d)
 
 void p2m_teardown(struct domain *d)
 {
+/* TEST */
+    printk(XENLOG_INFO "[DBG] p2m_teardown\n");
+/* TEST END */
     /*
      * We must teardown altp2m unconditionally because
      * we initialise it unconditionally.
@@ -1671,9 +1689,9 @@ int p2m_init(struct domain *d)
 
 int relinquish_p2m_mapping(struct domain *d)
 {
-    struct p2m_domain *p2m = &d->arch.p2m;
+    struct p2m_domain *p2m = p2m_get_hostp2m(d);
 
-    return apply_p2m_changes(d, p2m_get_hostp2m(d), RELINQUISH,
+    return apply_p2m_changes(d, p2m, RELINQUISH,
                               pfn_to_paddr(p2m->lowest_mapped_gfn),
                               pfn_to_paddr(p2m->max_mapped_gfn),
                               pfn_to_paddr(INVALID_MFN),
@@ -1683,12 +1701,12 @@ int relinquish_p2m_mapping(struct domain *d)
 
 int p2m_cache_flush(struct domain *d, xen_pfn_t start_mfn, xen_pfn_t end_mfn)
 {
-    struct p2m_domain *p2m = &d->arch.p2m;
+    struct p2m_domain *p2m = p2m_get_hostp2m(d);
 
     start_mfn = MAX(start_mfn, p2m->lowest_mapped_gfn);
     end_mfn = MIN(end_mfn, p2m->max_mapped_gfn);
 
-    return apply_p2m_changes(d, p2m_get_hostp2m(d), CACHEFLUSH,
+    return apply_p2m_changes(d, p2m, CACHEFLUSH,
                              pfn_to_paddr(start_mfn),
                              pfn_to_paddr(end_mfn),
                              pfn_to_paddr(INVALID_MFN),
@@ -1799,13 +1817,19 @@ err:
     return page;
 }
 
-struct page_info *get_page_from_gva(struct domain *d, vaddr_t va,
+struct page_info *get_page_from_gva(struct vcpu *v, vaddr_t va,
                                     unsigned long flags)
 {
-    struct p2m_domain *p2m = &d->arch.p2m;
+    struct domain *d = v->domain;
+    struct p2m_domain *p2m = NULL;
     struct page_info *page = NULL;
     paddr_t maddr = 0;
     int rc;
+
+    if ( altp2m_active(d) )
+        p2m = p2m_get_altp2m(v);
+    else
+        p2m = p2m_get_hostp2m(d);
 
     spin_lock(&p2m->lock);
 
@@ -1814,15 +1838,24 @@ struct page_info *get_page_from_gva(struct domain *d, vaddr_t va,
         unsigned long irq_flags;
 
         local_irq_save(irq_flags);
-        p2m_load_VTTBR(d); /* TODO: Incorporate p2m_load_altp2m_VTTBR(v) */
+        
+        if ( altp2m_active(d) )
+            p2m_load_altp2m_VTTBR(v);
+        else
+            p2m_load_VTTBR(d);
 
         rc = gvirt_to_maddr(va, &maddr, flags);
 
-        p2m_load_VTTBR(current->domain); /* TODO: Incorporate p2m_load_altp2m_VTTBR(v) */
+        if (  altp2m_active(current->domain) )
+            p2m_load_altp2m_VTTBR(current);
+        else
+            p2m_load_VTTBR(current->domain);
+
         local_irq_restore(irq_flags); 
     }
     else
     {
+        /* TODO: Is the correct VTTBR set? */
         rc = gvirt_to_maddr(va, &maddr, flags);
     }
 
