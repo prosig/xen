@@ -2261,7 +2261,6 @@ int p2m_switch_domain_altp2m_by_id(struct domain *d, unsigned int idx)
                 atomic_dec(&p2m_get_altp2m(v)->active_vcpus);
                 vcpu_altp2m(v).p2midx = idx;
                 atomic_inc(&p2m_get_altp2m(v)->active_vcpus);
-                altp2m_vcpu_update_p2m(v);
             }
 
         rc = 0;

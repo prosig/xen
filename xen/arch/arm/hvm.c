@@ -247,37 +247,6 @@ long do_hvm_op(unsigned long op, XEN_GUEST_HANDLE_PARAM(void) arg)
     return rc;
 }
 
-void altp2m_vcpu_update_p2m(struct vcpu *v)
-{
-//     struct domain *d = v->domain;
-//     struct p2m_domain *p2m = NULL;
-//     struct vttbr_data *vttbr;
-//
-//     if ( altp2m_active(d) )
-//         p2m = p2m_get_altp2m(v);
-//     if ( !p2m )
-//     {
-// /* TEST */
-//         printk(XENLOG_INFO "[DBG] altp2m_vcpu_update_p2m: ap2m = NULL\n");
-// /* TEST END */
-//         p2m = p2m_get_hostp2m(d);
-//     }
-//
-//     vttbr = &p2m->vttbr;
-//
-// /* TEST */
-//     printk(XENLOG_INFO "[DBG] altp2m_vcpu_update_p2m: old vttbr=%llx\n", READ_SYSREG64(VTTBR_EL2));
-//     printk(XENLOG_INFO "[DBG] altp2m_vcpu_update_p2m: new vttbr=%llx\n", vttbr->vttbr);
-// /* TEST END */
-//
-//     // WRITE_SYSREG64(vttbr->vttbr, VTTBR_EL2);
-//     // isb(); /* Ensure update is visible */
-//
-// /* TEST */
-//     printk(XENLOG_INFO "[DBG] altp2m_vcpu_update_p2m: vttbr=%llx written\n", vttbr->vttbr);
-// /* TEST END */
-}
-
 /*
  * Local variables:
  * mode: C
