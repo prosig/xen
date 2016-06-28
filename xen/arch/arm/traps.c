@@ -2418,27 +2418,15 @@ static void do_trap_instr_abort_guest(struct cpu_user_regs *regs,
                 .gla_valid = 1,
                 .kind = hsr.iabt.s1ptw ? npfec_kind_in_gpt : npfec_kind_with_gla
             };
-/* TEST */
-#if 0
-            gdprintk(XENLOG_DEBUG, "[DBG] instr_abort (altp2m[%d]): \n"
-                    " [+] ipa=0x%llx (gva=0x%x) \n"
-                    " [+] SR=0x%x pc=%#"PRIregister".\n",
-                    vcpu_altp2m(v).p2midx, gpa, gva, hsr.bits, regs->pc);
-#endif
-/* TEST END */
 
             if ( p2m_altp2m_lazy_copy(v, gpa, gva, npfec, &p2m) )
                 return;
-/* TEST */
-            gdprintk(XENLOG_WARNING, "Failed resolving altp2m 2nd stage page fault.\n");
-/* TEST END */
 
             rc = p2m_mem_access_check(gpa, gva, npfec);
+
             /* Trap was triggered by mem_access, work here is done */
             if ( !rc )
                 return;
-            
-            //domain_crash(d);    
         }
 
         break;
@@ -2469,7 +2457,6 @@ static void do_trap_data_abort_guest(struct cpu_user_regs *regs,
 {
     const struct hsr_dabt dabt = hsr.dabt;
     struct vcpu *v = current;
-//    struct domain *d = v->domain;
     struct p2m_domain *p2m = NULL;
     int rc;
     mmio_info_t info;
@@ -2509,29 +2496,14 @@ static void do_trap_data_abort_guest(struct cpu_user_regs *regs,
                 .kind = dabt.s1ptw ? npfec_kind_in_gpt : npfec_kind_with_gla
             };
 
-/* TEST */
-#if 0
-            gdprintk(XENLOG_DEBUG, "[DBG] data_abort (altp2m[%d]): \n"
-                    " [+] HSR=0x%x pc=%#"PRIregister"\n"
-                    " [+] gva=%#"PRIvaddr" gpa=%#"PRIpaddr"\n",
-                    vcpu_altp2m(v).p2midx, hsr.bits, regs->pc, info.gva, info.gpa);
-#endif
-/* TEST END */
-            
             if ( p2m_altp2m_lazy_copy(v, info.gpa, info.gva, npfec, &p2m) )
                 return;
-
-/* TEST */
-            gdprintk(XENLOG_WARNING, "Failed resolving altp2m 2nd stage page fault.\n");
-/* TEST END */
 
             rc = p2m_mem_access_check(info.gpa, info.gva, npfec);
 
             /* Trap was triggered by mem_access, work here is done */
             if ( !rc )
                 return;
-
-            //domain_crash(d);    
         }
 
         break;

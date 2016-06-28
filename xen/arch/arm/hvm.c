@@ -35,18 +35,15 @@
 #include <asm/altp2m.h>
 #include <asm/hvm/hvm.h>
 
-/* Xen command-line option to enable altp2m */
+/* Xen command-line option enabling altp2m */
 static bool_t __initdata opt_altp2m_enabled = 0;
 boolean_param("altp2m", opt_altp2m_enabled);
-
-// static struct hvm_function_table __initdata __hvm_funcs = {
-//     .name = "ARM_HVM",
-// };
 
 struct hvm_function_table hvm_funcs __read_mostly = {
     .name = "ARM_HVM",
 };
 
+/* Initcall enabling hvm functionality. */
 static int __init hvm_enable(void)
 {
     if ( opt_altp2m_enabled )
@@ -81,13 +78,6 @@ static int do_altp2m_op(XEN_GUEST_HANDLE_PARAM(void) arg)
 
     if ( d == NULL )
         return -ESRCH;
-
-    /* TODO: Xen supports only ARM pvhvm domains */
-//     if ( !is_hvm_domain(d) )
-//     {
-//         rc = -EOPNOTSUPP;
-//         goto out;
-//     }
 
     if ( (a.cmd != HVMOP_altp2m_get_domain_state) &&
          (a.cmd != HVMOP_altp2m_set_domain_state) &&
@@ -124,11 +114,6 @@ static int do_altp2m_op(XEN_GUEST_HANDLE_PARAM(void) arg)
             break;
         }
 
-/* TEST */
-        printk(XENLOG_INFO "[DBG] HVMOP_altp2m_set_domain_state: ostate=%d vs nstate=%d\n",
-                d->arch.altp2m_active, a.u.domain_state.state);
-/* TEST END */
-
         ostate = d->arch.altp2m_active;
         d->arch.altp2m_active = !!a.u.domain_state.state;
 
@@ -151,7 +136,6 @@ static int do_altp2m_op(XEN_GUEST_HANDLE_PARAM(void) arg)
         break;
     }
 
-    /* TODO: implement following cases. */
     case HVMOP_altp2m_vcpu_enable_notify:
         rc = -EOPNOTSUPP;
         break;

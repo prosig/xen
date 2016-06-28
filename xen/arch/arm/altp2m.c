@@ -21,16 +21,14 @@
 #include <asm/altp2m.h>
 #include <asm/hvm/hvm.h>
 
-void
-altp2m_vcpu_reset(struct vcpu *v)
+void altp2m_vcpu_reset(struct vcpu *v)
 {
     struct altp2mvcpu *av = &vcpu_altp2m(v);
 
     av->p2midx = INVALID_ALTP2M;
 }
 
-void
-altp2m_vcpu_initialise(struct vcpu *v)
+void altp2m_vcpu_initialise(struct vcpu *v)
 {
     if ( v != current )
         vcpu_pause(v);
@@ -43,8 +41,7 @@ altp2m_vcpu_initialise(struct vcpu *v)
         vcpu_unpause(v);
 }
 
-void
-altp2m_vcpu_destroy(struct vcpu *v)
+void altp2m_vcpu_destroy(struct vcpu *v)
 {
     struct p2m_domain *p2m;
 

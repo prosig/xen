@@ -108,15 +108,14 @@ typedef enum {
     p2m_max_real_type,  /* Types after this won't be store in the p2m */
 } p2m_type_t;
 
-static inline
-void p2m_mem_access_emulate_check(struct vcpu *v,
-                                  const vm_event_response_t *rsp)
+static inline void p2m_mem_access_emulate_check(struct vcpu *v,
+                                                const vm_event_response_t *rsp)
 {
     /* Not supported on ARM. */
 }
 
 /*
- * Alternate p2m: shadow p2m tables used for alternate memory views
+ * Alternate p2m: shadow p2m tables used for alternate memory views.
  */
 
 #define altp2m_lock(d)      spin_lock(&(d)->arch.altp2m_lock)
@@ -136,7 +135,8 @@ void p2m_flush_altp2m(struct domain *d);
 
 /* Alternate p2m paging */
 bool_t p2m_altp2m_lazy_copy(struct vcpu *v, paddr_t gpa,
-    unsigned long gla, struct npfec npfec, struct p2m_domain **ap2m);
+                            unsigned long gla, struct npfec npfec,
+                            struct p2m_domain **ap2m);
 
 /* Make a specific alternate p2m valid */
 int p2m_init_altp2m_by_id(struct domain *d, unsigned int idx);

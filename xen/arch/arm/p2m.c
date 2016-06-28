@@ -84,21 +84,29 @@ void dump_p2m_lookup(struct domain *d, paddr_t addr)
                  P2M_ROOT_LEVEL, P2M_ROOT_PAGES);
 }
 
+static uint64_t p2m_get_altp2m_vttbr(struct vcpu *v)
+{
+    struct domain *d = v->domain;
+    uint16_t index = vcpu_altp2m(v).p2midx;
+
+    if ( index == INVALID_ALTP2M )
+        return INVALID_MFN;
+
+    BUG_ON(index >= MAX_ALTP2M);
+
+    return d->arch.altp2m_vttbr[index];
+}
+
 static void p2m_load_altp2m_VTTBR(struct vcpu *v)
 {
-    uint16_t altp2m_idx = vcpu_altp2m(v).p2midx;
     struct domain *d = v->domain;
+    uint64_t vttbr = p2m_get_altp2m_vttbr(v);
 
     if ( is_idle_domain(d) )
         return;
 
-/* TEST */
-//     printk(XENLOG_INFO "[DBG] p2m_load_altp2m_VTTBR[%d]: vttbr=0x%llx\n",
-//            altp2m_idx, d->arch.altp2m_vttbr[altp2m_idx]);
-/* TEST END */
-
-    BUG_ON(!d->arch.altp2m_vttbr[altp2m_idx]);
-    WRITE_SYSREG64(d->arch.altp2m_vttbr[altp2m_idx], VTTBR_EL2);
+    BUG_ON(vttbr == INVALID_MFN);
+    WRITE_SYSREG64(vttbr, VTTBR_EL2);
 
     isb(); /* Ensure update is visible */
 }
@@ -1370,14 +1378,14 @@ void guest_physmap_remove_page(struct domain *d,
 
 static int p2m_alloc_table(struct p2m_domain *p2m)
 {
-    struct page_info *page;
+    struct page_info *page = NULL;
     unsigned int i;
 
     page = alloc_domheap_pages(NULL, P2M_ROOT_ORDER, 0);
     if ( page == NULL )
         return -ENOMEM;
 
-    /* Clear both first level pages */
+    /* Clear all first level pages */
     for ( i = 0; i < P2M_ROOT_PAGES; i++ )
         clear_and_clean_page(page + i);
 
@@ -1394,7 +1402,7 @@ int p2m_table_init(struct domain *d)
 {
     int i = 0;
     int rc = -ENOMEM;
-    struct p2m_domain *p2m = &d->arch.p2m;
+    struct p2m_domain *p2m = p2m_get_hostp2m(d);
 
     spin_lock(&p2m->lock);
 
@@ -1531,9 +1539,6 @@ static void p2m_free_one(struct p2m_domain *p2m)
         if ( pg != p2m->root )
             free_domheap_page(pg);
 
-    /* Check whether p2m has already been freed before - preventing segfaults. */
-//    if ( p2m->root )
-//    {
     for ( i = 0; i < P2M_ROOT_PAGES; i++ )
     {
         mfn = _mfn(page_to_mfn(p2m->root) + i);
@@ -1541,7 +1546,6 @@ static void p2m_free_one(struct p2m_domain *p2m)
     }
     free_domheap_pages(p2m->root, P2M_ROOT_ORDER);
     p2m->root = NULL;
-//    }
 
     radix_tree_destroy(&p2m->mem_access_settings, NULL);
 
@@ -1573,10 +1577,6 @@ static void p2m_teardown_hostp2m(struct domain *d)
     struct page_info *pg = NULL;
     mfn_t mfn;
     unsigned int i;
-
-/* TEST */
-    printk(XENLOG_INFO "[DBG] p2m_teardown_hostp2m.\n");
-/* TEST END */
 
     spin_lock(&p2m->lock);
 
@@ -1646,10 +1646,6 @@ static void p2m_teardown_altp2m(struct domain *d)
     {
         if ( !d->arch.altp2m_p2m[i] )
             continue;
-
-/* TEST */
-        printk(XENLOG_INFO "[DBG] p2m_teardown_altp2m[%d]\n", i);
-/* TEST END */
 
         p2m = d->arch.altp2m_p2m[i];
         p2m_free_one(p2m);
@@ -2364,68 +2360,24 @@ bool_t p2m_altp2m_lazy_copy(struct vcpu *v, paddr_t gpa,
     spin_lock(&hp2m->lock);
     maddr = __p2m_lookup(hp2m, gpa, &p2mt);
     if ( maddr == INVALID_PADDR )
-    {
-/* TEST */
-#if 0
-        gdprintk(XENLOG_DEBUG, "Failed to perform hostp2m table lookup.\n");
-        gdprintk(XENLOG_DEBUG, "----------------\n");
-        printk(XENLOG_INFO "[--- P2M Lookup altp2m[%d]]\n", vcpu_altp2m(v).p2midx);
-        dump_p2m_lookup(d, gpa);
-        printk(XENLOG_INFO "[--- P2M Lookup hostp2m]\n");
-        dump_pt_walk(page_to_maddr(hp2m->root), gpa,
-                     P2M_ROOT_LEVEL, P2M_ROOT_PAGES);
-        gdprintk(XENLOG_DEBUG, "----------------\n");
-#endif
-/* TEST END */
-
-        spin_unlock(&hp2m->lock);
-        return 0;
-    }
+        goto out;
 
     rc = __p2m_get_mem_access(hp2m, gfn, &xma);
     if ( rc )
-    {
-        spin_unlock(&hp2m->lock);
-        return 0;
-    }
+        goto out;
 
     rc = p2m_get_gfn_mapping_size(hp2m, gpa, &level, &mattr);
     if ( rc )
-    {
-        spin_unlock(&hp2m->lock);
-        return 0;
-    }
+        goto out;
     spin_unlock(&hp2m->lock);
 
     mask = level_masks[level];
-
-/* TEST */
-#if 0
-    printk(XENLOG_INFO "[DBG] level=%d\n", level);
-    printk(XENLOG_INFO "[DBG] start_addr=%lx end_addr=%lx maddr=%lx\n",
-                (unsigned long)(pfn_to_paddr(gfn_x(gfn)) & mask),
-                (unsigned long)((pfn_to_paddr(gfn_x(gfn)) + level_sizes[level]) & mask),
-                (unsigned long)(maddr & mask));
-#endif
-/* TEST END */
 
     rc = apply_p2m_changes(d, *ap2m, INSERT,
                            pfn_to_paddr(gfn_x(gfn)) & mask,
                            (pfn_to_paddr(gfn_x(gfn)) + level_sizes[level]) & mask,
                            maddr & mask, mattr, 0, p2mt,
                            memaccess[xma]);
-
-
-/* TEST */
-#if 0
-    printk(XENLOG_INFO "[--- P2M Lookup altp2m[%d]]\n", vcpu_altp2m(v).p2midx);
-    dump_p2m_lookup(d, gpa);
-    printk(XENLOG_INFO "[--- P2M Lookup hostp2m]\n");
-    dump_pt_walk(page_to_maddr(hp2m->root), gpa,
-                 P2M_ROOT_LEVEL, P2M_ROOT_PAGES);
-#endif
-/* TEST END */
-
     if ( rc )
     {
         gdprintk(XENLOG_ERR, "failed to set entry for %lx -> %lx p2m %lx\n",
@@ -2434,6 +2386,10 @@ bool_t p2m_altp2m_lazy_copy(struct vcpu *v, paddr_t gpa,
     }
 
     return 1;
+
+out:
+    spin_unlock(&hp2m->lock);
+    return 0;
 }
 
 static void p2m_init_altp2m_helper(struct domain *d, unsigned int i)
@@ -2445,7 +2401,6 @@ static void p2m_init_altp2m_helper(struct domain *d, unsigned int i)
     p2m->lowest_mapped_gfn = INVALID_GFN;
     p2m->max_mapped_gfn = 0;
 
-    /* TODO: page_to_maddr returns a 48-bit value. bttbr_baddr is 40 bit long? */
     vttbr->vttbr_baddr = page_to_maddr(p2m->root);
     vttbr->vttbr_vmid = p2m->vmid;
 
@@ -2502,10 +2457,6 @@ static void p2m_flush_table(struct p2m_domain *p2m)
     struct page_info *top, *pg;
     mfn_t mfn;
 
-/* TEST */
-    printk(XENLOG_INFO "[DBG] p2m_flush_table.\n");
-/* TEST END */
-
     /* Check whether the p2m table has already been flushed before. */
     if ( p2m->root == NULL)
         return;
@@ -2556,9 +2507,6 @@ void p2m_flush_altp2m(struct domain *d)
 
     for ( i = 0; i < MAX_ALTP2M; i++ )
     {
-/* TEST */
-        printk(XENLOG_INFO "[DBG] p2m_flush_altp2m[%d]\n", i);
-/* TEST */
         p2m_flush_table(d->arch.altp2m_p2m[i]);
         flush_tlb();
         d->arch.altp2m_vttbr[i] = INVALID_MFN;
@@ -2576,10 +2524,6 @@ int p2m_destroy_altp2m_by_id(struct domain *d, unsigned int idx)
         return rc;
 
     domain_pause_except_self(d);
-
-/* TEST */
-    printk(XENLOG_INFO "[DBG] p2m_destroy_domain_altp2m_by_id: idx=%d\n", idx);
-/* TEST */
 
     altp2m_lock(d);
 
@@ -2610,10 +2554,6 @@ int p2m_switch_domain_altp2m_by_id(struct domain *d, unsigned int idx)
 
     if ( idx >= MAX_ALTP2M )
         return rc;
-
-/* TEST */
-    printk(XENLOG_INFO "[DBG] p2m_switch_domain_altp2m_by_id: idx=%d\n", idx);
-/* TEST */
 
     domain_pause_except_self(d);
 
@@ -2685,12 +2625,9 @@ int p2m_change_altp2m_gfn(struct domain *d, unsigned int idx,
             /* Get mapped level and memory attr of the mapped old_gpa */ 
             spin_lock(&ap2m->lock);
             rc = p2m_get_gfn_mapping_size(ap2m, old_gpa, &level, &mattr);
-            if ( rc )
-            {
-                spin_unlock(&ap2m->lock);
-                return -EINVAL;
-            }
             spin_unlock(&ap2m->lock);
+            if ( rc )
+                return -EINVAL;
 
             mask = level_masks[level];
             
@@ -2712,28 +2649,18 @@ int p2m_change_altp2m_gfn(struct domain *d, unsigned int idx,
     {
         spin_lock(&hp2m->lock);
         maddr = __p2m_lookup(hp2m, old_gpa, &t);
-
         if ( (maddr == INVALID_PADDR) || (t != p2m_ram_rw) )
-        {
-            spin_unlock(&hp2m->lock);
-            return -EINVAL;
-        }
+            goto out;
 
         /* Get map-level and mem-attr of the mapped old_gpa */ 
         rc = p2m_get_gfn_mapping_size(hp2m, old_gpa, &level, &mattr);
         if ( rc )
-        {
-            spin_unlock(&hp2m->lock);
-            return -EINVAL;
-        }
+            goto out;
 
         /* Get memory access attributes of the mapped gfn */
         rc = __p2m_get_mem_access(hp2m, old_gfn, &xma);
         if ( rc )
-        {
-            spin_unlock(&hp2m->lock);
-            return 0;
-        }
+            goto out;
         spin_unlock(&hp2m->lock);
 
         /* If this is a superpage, copy that first */
@@ -2755,17 +2682,11 @@ int p2m_change_altp2m_gfn(struct domain *d, unsigned int idx,
 
     rc = p2m_get_gfn_mapping_size(ap2m, new_gpa, &level, &mattr);
     if ( rc )
-    {
-        spin_unlock(&ap2m->lock);
-        return -EINVAL;
-    }
+        goto out;
 
     rc = __p2m_get_mem_access(ap2m, new_gfn, &xma);
     if ( rc )
-    {
-        spin_unlock(&ap2m->lock);
-        return -EINVAL;
-    }
+        goto out;
     spin_unlock(&ap2m->lock);
 
     /* If new_gpa is not part of altp2m, get the mapping information from hp2m */
@@ -2776,17 +2697,11 @@ int p2m_change_altp2m_gfn(struct domain *d, unsigned int idx,
 
         rc = p2m_get_gfn_mapping_size(hp2m, new_gpa, &level, &mattr);
         if ( rc )
-        {
-            spin_unlock(&hp2m->lock);
-            return -EINVAL;
-        }
+            goto out;
 
         rc = __p2m_get_mem_access(hp2m, new_gfn, &xma);
         if ( rc )
-        {
-            spin_unlock(&hp2m->lock);
-            return -EINVAL;
-        }
+            goto out;
         spin_unlock(&hp2m->lock);
     }
 
@@ -2803,6 +2718,15 @@ int p2m_change_altp2m_gfn(struct domain *d, unsigned int idx,
         return -EINVAL;
     
     return 0;
+
+out:
+    if ( spin_is_locked(&hp2m->lock) )
+        spin_unlock(&hp2m->lock);
+
+    if ( spin_is_locked(&ap2m->lock) )
+        spin_unlock(&ap2m->lock);
+
+    return -EINVAL;
 }
 
 /*
